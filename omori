@@ -1,1 +1,3 @@
 import pygame, os, json, time
+
+pygame.init()
