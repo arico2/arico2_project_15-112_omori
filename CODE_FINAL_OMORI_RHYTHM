@@ -1,0 +1,572 @@
+"""
+Grading shortcut:
+- When in a song to skip to results screen, press 0
+- In editor: SPACE play/pause, arrows scrub, ENTER save.
+
+1. Time-based rhythm engine with note scrolling + hit windows       (most important)
+2. Custom beatmap editor with save/load JSON charts
+3. Tap notes + hold notes with duration-based scoring
+4. Combo, judgement, miss detection, and results grading system
+5. Multiple modes: Play, Map Editor, Song Select, Results
+6. OMORI-themed animated UI and reactive visuals
+
+Music & sounds: OMORI Original Soundtrack by Bo en & Slime Girls, accessed via vgmtreasurechest.com
+Images: OMORI by OMOCAT, LLC — character and UI assets from the game
+"""
+
+from cmu_graphics import *
+import time, json, os
+
+def onAppStart(app):
+    app.width = 600
+    app.height = 800
+    app.colors = ["blue", "red", "green", "hotpink"] #name to laneColors
+    app.laneOpacity = [60] * 4
+    app.keys = ["d", "f", "j", "k"]
+    app.state = "menuMode"
+    app.songs = [{"title" : "Final Duet", "url" : "https://lambda.vgmtreasurechest.com/soundtracks/omori-original-soundtrack-2020/iipajvyh/172.%20DUET.mp3", "duration": 186},
+                {"title" : "My Time", "url" : "https://lambda.vgmtreasurechest.com/soundtracks/omori-original-soundtrack-2020/jzttppiv/178.%20My%20Time.mp3", "duration": 212},
+                {"title" : "I just love the 50's!!!", "url" : "https://lambda.vgmtreasurechest.com/soundtracks/omori-original-soundtrack-2020/kimkoqnr/87.%20I%20Just%20Love%20The%2050s%21%21%21.mp3", "duration": 77},
+                {"title": "Lost Library", "url": "https://lambda.vgmtreasurechest.com/soundtracks/omori-original-soundtrack-2020/vczsnlsh/88.%20Lost%20Library.mp3", "duration": 75}
+                ]
+    app.bulbOpacity = 100
+    app.bulbFlicker = 0
+    app.menuMusic = Sound("https://lambda.vgmtreasurechest.com/soundtracks/omori-original-soundtrack-2020/ifdbyket/01.%20Title.mp3")
+    app.clickSound = Sound("https://raw.githubusercontent.com/arico2/arico2_project_15-112_omori/main/SYS_select%20(3).mp3")
+    app.menuMusic.play(restart=True)
+    app.menuMusicTimer = 0
+    app.menuMusicDuration = 47 #10 sec gap between replaying menu song
+    app.idleTimer = 0
+    app.showSomethingText = False
+    app.omoriFont = "https://raw.githubusercontent.com/arico2/arico2_project_15-112_omori/main/OMORI_GAME2.ttf"
+    app.selectedSong = 0
+    app.selectedMode = 0
+    app.playOrMap = None
+    app.choosingSong = True
+    app.song = None
+    app.noteHeight = 20
+    app.resultsSong = "https://lambda.vgmtreasurechest.com/soundtracks/omori-original-soundtrack-2020/bchcopjx/175.%20Clean%20Slate.mp3"
+    #add the songs "Title", and "My Time"
+    
+    # the following are variables for the editor specifically
+    app.laneX = [30, 170, 310, 450]
+    app.laneWidth = 120
+    app.pixelsPerSecond = 300 #scroll speed
+    app.editorHitLine = 750 # y of hit line for the editor
+    app.editorBottomY = 760 # bottom for editor
+    app.editorTime = 0.0
+    app.pausedAt = 0.0 #time song was paused at
+    app.paused = True
+    app.playStartWallTime = 0.0
+    app.notes = [] # time and placement for notes for songs
+    app.heldKeys = {} #when holding key in edit mode
+
+    #the following are for when playing the game
+    app.songStartTime = 0.0
+    app.score = 0
+    app.combo = 0
+    app.judgement = ""      # "perfect", "good", or "miss"
+    app.judgementTimer = 0  # how long to show the judgement text
+    app.activeHolds = {} #specifcially for scoring when holding
+    app.activeHolds = {}  # lane to note being held
+    app.misses = 0 #overall misses and such for results purposes
+    app.goods = 0
+    app.perfects = 0
+    app.comboSize = 30
+    app.comboAngle = 0
+    app.comboColor = "white"
+
+def redrawAll(app):
+    if app.state == "menuMode":
+        drawMenu(app)
+    if app.state == "songMenuMode":
+        drawSongMenu(app)
+    if app.state == "songMode":
+        drawSongMode(app)
+    if app.state == "editMode":
+        drawEditor(app)
+    if app.state == "resultsMode":
+        drawResults(app)
+
+def drawMenu(app):
+    #REMEMBER want to make this screen much better with the omori light bulb and for it to blink
+    drawRect(0, 0, app.width, app.height)
+    rectX = app.width / 2
+    rectY = app.height / 2 - 100
+    drawImage("https://raw.githubusercontent.com/arico2/arico2_project_15-112_omori/main/omori_lightbulb.png", 
+          app.width/2, 75, align="center", opacity=app.bulbOpacity, width=150, height=150)
+    drawLabel("OM", app.width / 2 - 100 , 85, size = 120, font = 'OMORI_GAME', fill = "white")
+    drawLabel("     RI", app.width / 2, 85, size = 120, font = 'OMORI_GAME', fill = "white")
+    drawLabel("Rhythm Game", app.width / 2, 150, size = 25, font = 'OMORI_GAME', fill = "white")
+    drawLabel("UP/DOWN to select    ENTER to confirm", rectX, rectY - 100, font = 'OMORI_GAME', size = 20, fill = "white")
+    drawLabel("Play", rectX, rectY, size = 35, font = 'OMORI_GAME', fill = "white")
+    drawRect(rectX, rectY, 200, 100, align = "center", borderWidth = 5, fill = None)
+    somethingOpacity = 100 - app.bulbOpacity  # inverse of bulb
+    drawImage("https://raw.githubusercontent.com/arico2/arico2_project_15-112_omori/main/final_something_omori-removebg-preview.png",
+          app.width/2, app.height - 200, align="center", opacity=somethingOpacity, width=176, height=355)
+    if app.showSomethingText: drawLabel("Waiting for something to happen?", app.width / 2, app.height - 60, size = 18, fill = "white", font = "OMORI_GAME")
+
+def drawLanes(app): #used for editor
+    length = app.width / 5
+    height = 20
+    y = 750
+    x= 30
+    for i in range(len(app.colors)):
+        drawRect(x, y, length, height, fill = app.colors[i], opacity = app.laneOpacity[i],)
+        x += length + 20 #gap between rectangles
+
+def drawSongMode(app):
+    drawRect(0, 0, app.width, app.height)  # black background
+    now = time.time() - app.songStartTime
+    drawLine(0, app.editorHitLine, app.width, app.editorHitLine, fill="white", lineWidth=2) #hit line
+    drawLabel(f"Score: {app.score}", app.width / 2, 60, size=20, fill="white", font = 'OMORI_GAME') #score
+    # draw lanes
+    for i in range(len(app.laneX)):
+        drawRect(app.laneX[i], app.editorHitLine, app.laneWidth, 20, fill=app.colors[i], opacity=app.laneOpacity[i])
+    # draw notes
+    for note in list(app.notes):
+        x = app.laneX[note["lane"]]
+        y = noteY(app, app.editorHitLine, note["time"], now)
+        if 0 <= y <= app.height:
+            if note.get("endTime") is None:
+                drawRect(x, y, app.laneWidth, app.noteHeight, fill=app.colors[note["lane"]])
+            else:
+                yEnd = noteY(app, app.editorHitLine, note["endTime"], now)
+                drawRect(x, yEnd, app.laneWidth, y - yEnd, fill=app.colors[note["lane"]], opacity=70)
+
+    if app.judgementTimer > 0: #scoring
+        drawLabel(app.judgement, app.width / 2, 400, size=40, fill="white", font = 'OMORI_GAME')
+    
+    for i, note in list(app.activeHolds.items()): #held down notes
+        x = app.laneX[note["lane"]]
+        y = noteY(app, app.editorHitLine, note["time"], now)
+        yEnd = noteY(app, app.editorHitLine, note["endTime"], now)
+        if y - yEnd > 0:
+            drawRect(x, yEnd, app.laneWidth, y - yEnd, fill=app.colors[note["lane"]], opacity=40)
+
+    if app.combo > 0:
+        drawLabel(f"{app.combo}", app.width / 2, 100, size=app.comboSize, 
+                fill=app.comboColor, rotateAngle=app.comboAngle, font = 'OMORI_GAME')
+
+def drawSongMenu(app):
+    drawRect(0, 0, app.width, app.height)
+    drawImage("https://raw.githubusercontent.com/arico2/arico2_project_15-112_omori/main/omori_image_for_game-removebg-preview.png", 0, 500, width = 424, height = 313)
+    drawLabel("Select a song with UP/DOWN   ENTER to confirm", 100, 100, size = 20, align = "left", font = 'OMORI_GAME', fill = "white")
+    rectWidth = 400
+    rectHeight = 100
+    rectX = 250
+    rectY = 180
+    edgeOfRect = rectX + (rectWidth // 2)
+    topOfRect = rectY - (rectHeight // 2)
+    playAndMapcX = edgeOfRect+50
+    for i in range(len(app.songs)):
+        topOfRect = rectY - (rectHeight // 2)
+        playcY = topOfRect + 1/4 * rectHeight
+        mapcY = topOfRect + 3/4 * rectHeight
+        
+        borderColor = "white" if app.selectedSong == i else "black"
+        if app.selectedSong == i and not app.choosingSong:
+            playBorder = "white" if app.selectedMode == 0 else "black"
+            mapBorder = "white" if app.selectedMode == 1 else "black"
+        else:
+            playBorder, mapBorder = "black", "black"
+        drawLabel(f"{app.songs[i]['title']}", rectX, rectY, size = 40, font = 'OMORI_GAME', fill = "white")
+        drawRect(rectX, rectY, rectWidth, rectHeight, align = "center", border = borderColor, borderWidth = 5, fill = None)
+        mins = app.songs[i]["duration"] // 60
+        secs = app.songs[i]["duration"] % 60
+        drawLabel(f"{mins}:{secs:02d}", rectX + rectWidth//2 - 20, rectY, font='OMORI_GAME', size=15, fill="white", align="right")
+        drawLabel("Play", playAndMapcX, playcY, font = 'OMORI_GAME', size = 20, fill = "white")
+        drawRect(playAndMapcX, playcY, 100, rectHeight / 2, border = playBorder, borderWidth = 5, fill = None, align = "center")
+        drawLabel("Map", playAndMapcX, mapcY, font = 'OMORI_GAME', size = 20, fill = "white")
+        drawRect(playAndMapcX, mapcY, 100, rectHeight / 2, border = mapBorder, borderWidth = 5, fill = None, align = "center")
+        rectY += 120
+
+def drawEditor(app):
+    #sigh this pains me
+    drawRect(0,0,app.width, app.height)
+    drawLanes(app)
+    drawLine(0, app.editorHitLine, app.width, app.editorHitLine, fill = "white", lineWidth = 2)
+    now = currentTime(app)
+
+    # only calculate beats visible on screen
+    startT = now - (app.height - app.editorHitLine) / app.pixelsPerSecond
+    endT = now + app.editorHitLine / app.pixelsPerSecond
+    startBeat = max(0, int(startT * 4))
+    endBeat = int(endT * 4) + 1
+
+    for beat in range(startBeat, endBeat): #grid lines every 0.25 seconds
+        #beat grid, every 0.25 seconds
+        t = beat * 0.25
+        y = noteY(app, app.editorHitLine, t, now)
+        op = 20 if beat % 2 == 0 else 0
+        drawLine(60, y, app.width - 60, y, fill = "white", opacity = op, lineWidth = 1)
+    for note in app.notes: #actually drawing the notes!
+        x = app.laneX[note["lane"]]
+        y = noteY(app, app.editorHitLine, note["time"], now)
+        if note.get("endTime") is None:
+            drawRect(x, y, app.laneWidth, app.noteHeight, fill=app.colors[note["lane"]])
+        else:
+            yEnd = noteY(app, app.editorHitLine, note["endTime"], now)
+            drawRect(x, yEnd, app.laneWidth, y - yEnd, fill=app.colors[note["lane"]], opacity=70)
+
+    for i, startTime in list(app.heldKeys.items()):
+        now2 = currentTime(app)
+        x = app.laneX[i]
+        yStart = noteY(app, app.editorHitLine, startTime, now)
+        yEnd = noteY(app, app.editorHitLine, now2, now)
+        if yStart - yEnd > 0:
+            drawRect(x, yEnd, app.laneWidth, yStart - yEnd, fill=app.colors[i], opacity=50)
+        
+def togglePlayPause(app):
+    if app.paused:
+        app.playStartWallTime = time.time()
+        app.paused = False
+        app.song.play(restart = False)
+    else:
+        app.pausedAt = currentTime(app)
+        app.paused = True
+        app.song.pause()
+#
+def noteY(app, hitY, noteTime, nowTime): #THE MOST IMPORTANT FUNCTION!!!, turns time to a y 
+    return hitY - (noteTime - nowTime) * app.pixelsPerSecond #hitY is the line, if noteTime > now its in the future, noteTime < now in the past
+
+def currentTime(app):
+    if app.song is None: return app.editorTime
+    if app.paused: return app.pausedAt
+    return app.pausedAt + (time.time() - app.playStartWallTime) #this means the song is playing
+
+def saveChart(app):
+    songTitle = app.songs[app.selectedSong]["title"]
+    fileName = f"{songTitle}.json"
+    with open(fileName, "w") as f:
+        json.dump(app.notes, f)
+        
+def loadChart(app):
+    songTitle = app.songs[app.selectedSong]["title"]
+    fileName = f"{songTitle}.json"
+    if os.path.exists(fileName):
+        with open(fileName, "r") as f:
+            app.notes = json.load(f)
+        # sanitize notes, needed cuz of frequent crashes
+        cleaned = []
+        for note in app.notes:
+            if "lane" in note and "time" in note:
+                if note.get("endTime") is not None:
+                    if note["endTime"] <= note["time"]:
+                        note["endTime"] = None  # fix bad hold notes
+                cleaned.append(note)
+        app.notes = cleaned
+    else:
+        app.notes = []
+##
+
+def drawResults(app):
+    drawRect(0, 0, app.width, app.height)
+    drawLabel("Results", app.width/2, 80, size=35, fill="white", font = 'OMORI_GAME')
+    drawLabel(f"Score: {app.score}", app.width/2, 180, size=25, fill="white", font = 'OMORI_GAME')
+    drawLabel(f"Perfects: {app.perfects}", app.width/2, 240, size=20, fill="white", font = 'OMORI_GAME')
+    drawLabel(f"Goods: {app.goods}", app.width/2, 290, size=20, fill="yellow", font = 'OMORI_GAME')
+    drawLabel(f"Misses: {app.misses}", app.width/2, 340, size=20, fill="red", font = 'OMORI_GAME')
+    drawLabel(f"Grade: {getGrade(app)}", app.width/2, 420, size=40, fill="white", font = 'OMORI_GAME')
+    drawLabel("Press ENTER/ESC to continue", app.width/2, 600, size=15, fill="white", font = 'OMORI_GAME')
+
+def getGrade(app):
+    total = app.perfects + app.goods + app.misses
+    if total == 0: return "?"
+    accuracy = (app.perfects + app.goods * 0.5) / total
+    if accuracy >= 0.95: return "S"
+    elif accuracy >= 0.85: return "A"
+    elif accuracy >= 0.70: return "B"
+    elif accuracy >= 0.55: return "C"
+    elif accuracy >= 0.40: return "D"
+    else: return "F"
+
+def onKeyPress(app, key):
+    if app.state == "songMenuMode":
+        if key == "escape":
+            app.clickSound.play(restart=True)
+            if app.choosingSong == True:
+                app.state = "menuMode"
+            else:
+                app.choosingSong = True
+        if key == "enter":
+            app.clickSound.play(restart=True)
+            if app.choosingSong:
+                app.choosingSong = False
+            else:
+                app.menuMusic.pause()
+                app.menuMusicTimer = 0
+                if app.selectedMode == 0:
+                    app.state = "songMode"
+                    app.song = Sound(app.songs[app.selectedSong]["url"])
+                    app.song.play(restart = True)
+                    app.songStartTime = time.time()
+                    loadChart(app)
+                    resetStats(app)
+                else:
+                    app.state = "editMode"
+                    app.song = Sound(app.songs[app.selectedSong]["url"])
+                    app.paused = True
+                    app.pausedAt = 0.0
+                    loadChart(app)
+        if key == "up":
+            app.clickSound.play(restart=True)
+            if app.choosingSong == True:
+                app.selectedSong = (app.selectedSong - 1) % len(app.songs)
+            else:
+                app.selectedMode = (app.selectedMode - 1) % 2
+        if key == "down":
+            app.clickSound.play(restart=True)
+            if app.choosingSong == True:
+                app.selectedSong = (app.selectedSong + 1) % len(app.songs)
+            else:
+                app.selectedMode = (app.selectedMode + 1) % 2
+    
+    elif app.state == "songMode":
+        if key == "escape":
+            app.menuMusic.play(restart=True)
+            app.menuMusicTimer = 0
+            app.state = "songMenuMode"
+            try:
+                if app.song is not None:
+                    app.song.pause()
+                    app.song = None
+            except: 
+                app.song = None
+
+        for i in range(len(app.keys)):
+            if key == app.keys[i]:
+                app.laneOpacity[i] = 100
+                now = time.time() - app.songStartTime
+                # tap notes
+                for note in list(app.notes):
+                    if note["lane"] == i and note.get("endTime") is None:
+                        #print("note endTime =", note.get("endTime"), "lane =", note["lane"])
+                        diff = abs(note["time"] - now)
+                        if diff < 0.08:
+                            app.notes.remove(note)
+                            app.score += 100
+                            app.combo += 1
+                            app.perfects += 1
+                            app.judgement = "Perfect!"
+                            app.judgementTimer = 0.5
+                            app.comboSize = min(30 + app.combo // 10, 60)
+                            app.comboSize += 5
+                            app.comboColor = "yellow" if app.combo >= 100 else "white"
+                            break
+                        elif diff < 0.15:
+                            app.notes.remove(note)
+                            app.score += 50
+                            app.combo += 1
+                            app.goods += 1
+                            app.judgement = "Good!"
+                            app.judgementTimer = 0.5
+                            app.comboSize = min(30 + app.combo // 10, 60)
+                            app.comboSize += 5
+                            app.comboColor = "yellow" if app.combo >= 100 else "white"
+                            break
+                # hold notes
+                for note in list(app.notes):
+                    if note["lane"] == i and note.get("endTime") is not None:
+                        diff = abs(note["time"] - now)
+                        if diff < 0.3:
+                            app.activeHolds[i] = note
+                            app.notes.remove(note)
+                            break
+        if key == "0": #SHORTCUT FUNCTION FOR CONVIENENCE
+            app.state = "resultsMode"
+            app.song.pause()
+            app.song = None
+            
+    elif app.state == "menuMode":
+        if key == "enter":
+            app.clickSound.play(restart=True)
+            app.state = "songMenuMode"
+            app.idleTimer = 0
+            app.showSomethingText = False
+        
+    elif app.state == "editMode":
+        if key == "escape":
+            app.menuMusic.play(restart=True)
+            app.menuMusicTimer = 0
+            app.state = "songMenuMode"
+            try:
+                if app.song is not None:
+                    app.song.pause()
+                    app.song = None
+            except:
+                app.song = None
+            
+            #app.heldKeys = {}
+        if key == "space":
+            togglePlayPause(app)
+        if key == "enter":
+            saveChart(app)
+            try:
+                if app.song is not None:
+                    app.song.pause()
+                    app.song = None
+            except:
+                app.song = None
+            app.state = "songMenuMode"
+        if key == "left" and app.paused:
+            app.pausedAt = max(0, app.pausedAt - 0.25)
+        if key == "right" and app.paused:
+            app.pausedAt += 0.25
+        for i in range(len(app.keys)):
+            if key == app.keys[i]:
+                app.heldKeys[i] = currentTime(app)
+
+    elif app.state == "resultsMode":
+        if key == "enter" or key == "escape":
+            app.state = "songMenuMode"
+            app.menuMusic.play(restart=True)
+            app.menuMusicTimer = 0
+
+def resetStats(app):
+    app.score = 0
+    app.combo = 0
+    app.misses = 0
+    app.goods = 0
+    app.perfects = 0
+    app.judgement = ""
+    app.judgementTimer = 0
+    app.activeHolds = {}
+    app.comboSize = 30
+    app.comboAngle = 0
+    app.comboColor = "white"
+
+def onKeyRelease(app, key):
+    if app.state == "songMode": #for holding uses ratio held for that key to determine score lowk personal fav
+        for i in range(len(app.keys)):
+            if key == app.keys[i]:
+                app.laneOpacity[i] = 60
+                if i in app.activeHolds:
+                    note = app.activeHolds[i]
+                    now = time.time() - app.songStartTime
+                    holdDuration = note["endTime"] - note["time"]
+                    heldFor = now - note["time"]
+                    ratio = max(0, min(1, heldFor / holdDuration))
+                    if ratio >= 0.9:
+                        app.score += 125
+                        app.perfects += 1
+                        app.judgement = "Perfect!"
+                        app.comboSize = min(30 + app.combo // 10, 60)
+                        app.comboSize += 5
+                        app.comboColor = "yellow" if app.combo >= 100 else "white"
+                    elif ratio >= 0.5:
+                        app.score += rounded(125 * ratio)
+                        app.goods += 1
+                        app.judgement = "Good!"
+                        app.comboSize = min(30 + app.combo // 10, 60)
+                        app.comboSize += 5
+                        app.comboColor = "yellow" if app.combo >= 100 else "white"
+                    else:
+                        app.misses += 1
+                        app.judgement = "Miss!"
+                        app.combo = 0
+                        app.comboAngle = 45
+                        app.comboColor = "red"
+                        app.comboSize = 30
+                    app.combo += 1
+                    app.judgementTimer = 0.5
+                    del app.activeHolds[i]
+
+    elif app.state == "editMode":
+        for i in range(len(app.keys)):
+            if key == app.keys[i] and i in app.heldKeys:
+                startTime = app.heldKeys.get(i)  # safe get
+                if startTime is None:
+                    continue
+                endTime = currentTime(app)
+                duration = endTime - startTime
+                if duration < 0.25: #means it is one note only
+                    app.notes.append({"time": startTime, "endTime": None, "lane": i})
+                else:
+                    app.notes.append({"time": startTime, "endTime": endTime, "lane": i})
+                app.heldKeys.pop(i, None)  # safe delete
+
+
+
+def onMousePress(app, mouseX, mouseY, button):
+    if button == 2:
+        if app.state == "editMode":
+            now = currentTime(app)
+            for note in list(app.notes):
+                x = app.laneX[note["lane"]]
+                y = noteY(app, app.editorHitLine, note["time"], now)
+                if x <= mouseX <= x + app.laneWidth and y <= mouseY <= y + 10:
+                    app.notes.remove(note)
+                    return
+                
+    elif button == 0:
+        if app.state == "editMode":
+            now = currentTime(app)
+            lane = -1
+            for i in range(len(app.laneX)):
+                if app.laneX[i] <= mouseX <= app.laneX[i] + app.laneWidth:
+                    lane = i
+            if lane == -1:
+                return  # clicked in a gap, do nothing
+            noteTime = now + (app.editorHitLine - mouseY) / app.pixelsPerSecond
+            app.notes.append({"time": noteTime, "endTime": None, "lane": lane})
+
+def onStep(app):
+    if app.judgementTimer > 0:
+        app.judgementTimer -= 0.05
+    
+    if app.state == "songMode": #user missed notes
+        now = time.time() - app.songStartTime
+        for note in list(app.notes):
+            if now - note["time"] > 0.15:  # note is too far in the past
+                if note.get("endTime") is None:  # only miss tap notes this way
+                    app.notes.remove(note)
+                    app.misses += 1
+                    app.combo = 0
+                    app.judgement = "Miss!"
+                    app.judgementTimer = 0.5
+        for i, note in list(app.activeHolds.items()):
+            if now - note["endTime"] > 0.15:  # held way too long past end
+                holdDuration = note["endTime"] - note["time"]
+                heldFor = note["endTime"] - note["time"]  # give full credit since they held past end
+                app.score += 125
+                app.perfects += 1
+                app.judgement = "Perfect!"
+                app.judgementTimer = 0.5
+                app.combo += 1
+                del app.activeHolds[i]
+        if app.comboSize > 30:
+            app.comboSize -= 1
+        if app.comboAngle != 0:
+            app.comboAngle *= 0.8
+
+    if app.state == "songMode":
+        now = time.time() - app.songStartTime
+        if now >= app.songs[app.selectedSong]["duration"]:
+            app.state = "resultsMode"
+            try:
+                if app.song is not None:
+                    app.song.pause()
+                    app.song = None
+            except:
+                app.song = None
+    
+    if app.state in ["menuMode", "songMenuMode"]:
+        app.menuMusicTimer += 0.05  # matches judgementTimer speed
+        if app.menuMusicTimer >= app.menuMusicDuration:
+            app.menuMusicTimer = 0
+            app.menuMusic.play(restart=True)
+    
+    if app.state == "menuMode":
+        app.bulbFlicker += 1
+        app.idleTimer += 0.05
+        if app.bulbFlicker % 5 == 0:  # every 3 steps light flickers
+            import random
+            app.bulbOpacity = random.randint(20, 100)
+        if app.idleTimer >= 5:
+            app.showSomethingText = True
+
+def main():
+    runApp()
+
+main()
